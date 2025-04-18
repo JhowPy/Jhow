@@ -6,11 +6,13 @@ import io
 import streamlit_authenticator as stauth
 
 # ========== AUTENTICAÇÃO ==========
-# Usuários e senhas (você pode editar essas infos)
+# Hash de senhas seguras para os usuários
+hashes = stauth.Hasher(["1234", "adminpass", "basedeclientes2025"]).generate()
+
 usuarios = {
-    "jhow": stauth.Hasher(["1234"]).generate()[0],            # usuário: jhow / senha: 1234
-    "admin": stauth.Hasher(["adminpass"]).generate()[0],     # usuário: admin / senha: adminpass
-    "weslley.amorim": stauth.Hasher(["basedeclientes2025"]).generate()[0]  # novo usuário
+    "jhow": hashes[0],
+    "admin": hashes[1],
+    "weslley.amorim": hashes[2]
 }
 
 authenticator = stauth.Authenticate(
@@ -133,4 +135,5 @@ elif aba == "📊 Ver Clientes":
             df_clientes = df_clientes[df_clientes["Nome"] != nome_remover]
             salvar_dados(df_clientes)
             st.success(f"🗑️ Cliente '{nome_remover}' removido com sucesso!")
+
 
