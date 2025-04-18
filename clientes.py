@@ -35,6 +35,10 @@ authenticator = stauth.Authenticate(
 
 # Login
 nome, autenticado, nome_usuario = authenticator.login("Login", "main")
+
+# Botão de logout
+authenticator.logout("Sair", "sidebar")
+
 if not autenticado:
     st.stop()
 
