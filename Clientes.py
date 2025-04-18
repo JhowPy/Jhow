@@ -6,13 +6,15 @@ import io
 import streamlit_authenticator as stauth
 
 # ========== AUTENTICAÇÃO ==========
-# Hash de senhas seguras para os usuários
-hashes = stauth.Hasher(["1234", "adminpass", "basedeclientes2025"]).generate()
+# Hash de senhas seguras para os usuários (uma por linha)
+hash_jhow = stauth.Hasher(["1234"]).generate()[0]
+hash_admin = stauth.Hasher(["adminpass"]).generate()[0]
+hash_weslley = stauth.Hasher(["basedeclientes2025"]).generate()[0]
 
 usuarios = {
-    "jhow": hashes[0],
-    "admin": hashes[1],
-    "weslley.amorim": hashes[2]
+    "jhow": hash_jhow,
+    "admin": hash_admin,
+    "weslley.amorim": hash_weslley
 }
 
 authenticator = stauth.Authenticate(
@@ -127,13 +129,14 @@ elif aba == "📊 Ver Clientes":
             salvar_dados(df_clientes)
             st.success(f"✅ Pagamento registrado para {nome_pagamento}!")
 
-    # 🗑️ Remover cliente
+    # 🔑 Remover cliente
     st.subheader("Remover cliente da base")
     if not df_clientes.empty:
         nome_remover = st.selectbox("Selecione o cliente para remover", df_clientes["Nome"].unique(), key="remover")
         if st.button("Remover cliente"):
             df_clientes = df_clientes[df_clientes["Nome"] != nome_remover]
             salvar_dados(df_clientes)
-            st.success(f"🗑️ Cliente '{nome_remover}' removido com sucesso!")
+            st.success(f"🔑 Cliente '{nome_remover}' removido com sucesso!")
+
 
 
