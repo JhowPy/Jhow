@@ -1,0 +1,372 @@
+# IMPORTS
+import pandas as pd
+import xlwings as xw
+from openpyxl.utils import get_column_letter
+from datetime import datetime, timedelta, time as dt_time
+import os
+import shutil
+from xlwings.constants import HAlign
+
+# Forçar fechamento de qualquer Excel em segundo plano
+os.system("taskkill /f /im excel.exe 2>nul")
+
+# CONFIGURAÇÕES
+hoje = datetime.today()
+dia_anterior = hoje - timedelta(days=1)
+data_formatada = dia_anterior.strftime("%d.%m")
+
+# CAMINHOS
+caminho_arquivo_original = fr"F:\\BACKOFFICE - CONTACT CENTER\\Relatorios Extraidos Automacao\\22.04.xlsx"
+caminho_formatado = fr"F:\\BACKOFFICE - CONTACT CENTER\\Relatorios Extraidos Automacao\\22.04_Formatado.xlsx"
+caminho_dashboard = fr"F:\\BACKOFFICE - CONTACT CENTER\\Relatorios Extraidos Automacao\\Dashboard.xlsx"
+caminho_backup = caminho_dashboard.replace("Dashboard.xlsx", f"Dashboard_Template.xlsx")
+
+# BACKUP DO DASHBOARD
+shutil.copy(caminho_dashboard, caminho_backup)
+
+# FORMATAR PLANILHA BASE
+if not os.path.exists(caminho_arquivo_original):
+    raise FileNotFoundError(f"Arquivo não encontrado: {caminho_arquivo_original}")
+
+pd.read_excel(caminho_arquivo_original, dtype=str).to_excel(caminho_formatado, index=False, sheet_name="Base de Dados")
+
+# Inserção de coluna "Nova Coluna" com hora da associação
+from openpyxl import load_workbook
+wb_aux = load_workbook(caminho_formatado)
+ws_aux = wb_aux["Base de Dados"]
+df_temp = pd.read_excel(caminho_formatado, sheet_name="Base de Dados", dtype=str)
+
+coluna_Hr_Associacao = "Hr. Associação Comercial"
+coluna_Tempo_Associacao = "Tempo de Associação"
+coluna_Hr_idx = df_temp.columns.get_loc(coluna_Hr_Associacao) + 1
+coluna_Tempo_idx = df_temp.columns.get_loc(coluna_Tempo_Associacao) + 1
+
+ws_aux.insert_cols(coluna_Tempo_idx)
+ws_aux[f"{get_column_letter(coluna_Tempo_idx)}1"] = "Nova Coluna"
+
+for row in range(2, ws_aux.max_row + 1):
+    valor_hora = ws_aux.cell(row=row, column=coluna_Hr_idx).value
+    try:
+        hora = datetime.strptime(str(valor_hora).strip(), "%H:%M").hour
+        ws_aux.cell(row=row, column=coluna_Tempo_idx).value = hora
+    except (ValueError, TypeError):
+        continue
+
+wb_aux.save(caminho_formatado)
+
+# TRATAMENTO DE DADOS
+def tempo_personalizado(valor):
+    try:
+        partes = valor.strip().split(":")
+        if len(partes) == 2:
+            return pd.to_timedelta(f"{int(partes[0])}:{int(partes[1])}:00")
+        elif len(partes) == 3:
+            return pd.to_timedelta(valor)
+        else:
+            return pd.NaT
+    except (ValueError, AttributeError):
+        return pd.NaT
+
+# Leitura e conversões
+df = pd.read_excel(caminho_formatado, sheet_name="Base de Dados", dtype=str)
+df["Dt. Associação Comercial"] = pd.to_datetime(df["Dt. Associação Comercial"], dayfirst=True, errors="coerce")
+df["Hr. Associação Comercial"] = pd.to_datetime(df["Hr. Associação Comercial"], format="%H:%M", errors="coerce").dt.time
+df["Dt. Pré-agendamento"] = pd.to_datetime(df["Dt. Pré-agendamento"], dayfirst=True, errors="coerce")
+df["Hr. Pré-agendamento"] = pd.to_datetime(df["Hr. Pré-agendamento"], format="%H:%M", errors="coerce")
+df["Nova Coluna"] = pd.to_numeric(df["Nova Coluna"], errors="coerce")
+df["Tempo de Associação Convertido"] = df["Tempo de Associação"].apply(tempo_personalizado)
+df["Dt. Visita Real"] = pd.to_datetime(df["Dt. Visita Real"], dayfirst=True, errors="coerce")
+df["Hr. Visita"] = pd.to_datetime(df["Hr. Visita"], format="%H:%M", errors="coerce").dt.time
+
+# Limpeza e novas colunas
+df = df.dropna(subset=["Dt. Associação Comercial", "Nova Coluna", "Tempo de Associação Convertido", "Dt. Pré-agendamento", "Hr. Pré-agendamento"])
+df["Hora"] = df["Nova Coluna"].astype(int)
+df["Data"] = df["Dt. Associação Comercial"].dt.date
+df["Minutos Associacao"] = df["Tempo de Associação Convertido"].dt.total_seconds() / 60
+df["Hora Pre"] = df["Hr. Pré-agendamento"].dt.hour
+
+# CÁLCULOS
+horas = list(range(8, 19))
+dia_especifico = dia_anterior.date()
+df_dia = df[df["Data"] == dia_especifico]
+realizado = [df_dia[df_dia["Hora"] == h].shape[0] for h in horas]
+menos_1h = [df_dia[(df_dia["Hora"] == h) & (df_dia["Minutos Associacao"] < 60)].shape[0] for h in horas]
+
+df_real = df_dia[(df_dia["Dt. Pré-agendamento"].dt.date == dia_especifico) &
+                 (df_dia["Hr. Pré-agendamento"].dt.time >= dt_time(8, 0)) &
+                 (df_dia["Hr. Pré-agendamento"].dt.time <= dt_time(18, 30)) &
+                 (df_dia["Minutos Associacao"] >= 60)]
+perda_real = [df_real[df_real["Hora Pre"] == h].shape[0] for h in horas]
+
+df_total = df_dia[(df_dia["Dt. Pré-agendamento"].dt.date == dia_especifico) &
+                  (df_dia["Hr. Pré-agendamento"].dt.time >= dt_time(6, 0)) &
+                  (df_dia["Hr. Pré-agendamento"].dt.time <= dt_time(23, 0)) &
+                  (df_dia["Minutos Associacao"] >= 60)]
+
+# Leads para 10h e acumulados
+quantidade_10h = df[
+    (df["Dt. Visita Real"].dt.date == dia_especifico) &
+    (df["Hr. Visita"] >= dt_time(10, 0)) &
+    (df["Hr. Visita"] < dt_time(11, 0)) &
+    (df["Dt. Associação Comercial"].dt.date == dia_especifico)
+].shape[0]
+
+
+quantidade_0830 = df[(df["Dt. Pré-agendamento"].dt.date < dia_especifico) &
+                     (df["Dt. Associação Comercial"].dt.date == dia_especifico) &
+                     (df["Hr. Pré-agendamento"].dt.time <= dt_time(8, 30))].shape[0]
+
+quantidade_acumulados = df[(df["Dt. Associação Comercial"].dt.date == dia_especifico) &
+                            (df["Dt. Pré-agendamento"].dt.date < dia_especifico)].shape[0]
+
+quantidade_mesmo_dia_0830 = df[(df["Dt. Associação Comercial"].dt.date == dia_especifico) &
+                                (df["Dt. Pré-agendamento"].dt.date == dia_especifico) &
+                                (df["Hr. Pré-agendamento"].dt.time <= dt_time(8, 30))].shape[0]
+
+total_acumulado_completo = quantidade_acumulados + quantidade_mesmo_dia_0830
+
+# ➕ Leads do mesmo dia com pré-agendamento até 07:30
+total_acumulado_ate_0730 = df[(df["Dt. Associação Comercial"].dt.date == dia_especifico) &
+    (df["Dt. Pré-agendamento"].dt.date == dia_especifico) &
+    (df["Hr. Pré-agendamento"].dt.time <= dt_time(7, 30))].shape[0] + quantidade_acumulados
+
+# ATUALIZAÇÃO COM XLWINGS
+
+app = xw.App(visible=False)
+wb = app.books.open(caminho_dashboard)
+ws_base = wb.sheets["Base de Dados"]
+ws_performance = wb.sheets["Performance BackOffice"]
+
+# Preencher dados
+for i, h in enumerate(horas):
+    linha = i + 2
+    ws_base[f"A{linha}"].value = f"{h:02d}:00"
+    ws_base[f"B{linha}"].value = realizado[i]
+    ws_base[f"C{linha}"].value = menos_1h[i]
+    ws_base[f"D{linha}"].value = perda_real[i]
+
+ws_base["A15"].value = sum(menos_1h)
+ws_base["B15"].value = sum(realizado)
+ws_base["A18"].value = sum(perda_real)
+ws_base["B18"].value = df_total.shape[0]
+ws_base["B21"].value = quantidade_acumulados
+ws_base["B22"].value = total_acumulado_completo
+ws_base["B23"].value = total_acumulado_ate_0730
+
+ws_performance.range("R2").value = dia_especifico
+ws_performance.range("R2").number_format = "dd/mm/yyyy"
+ws_performance.range("M2").value = quantidade_10h
+ws_performance.range("M3").value = quantidade_0830
+ws_performance.range("L2").value = total_acumulado_completo
+
+# RESUMO POR HORA
+resumo_sheet_name = dia_especifico.strftime("Resumo %d.%m")
+if resumo_sheet_name in [s.name for s in wb.sheets]:
+    wb.sheets[resumo_sheet_name].delete()
+ws_resumo = wb.sheets.add(name=resumo_sheet_name, after=ws_performance)
+
+usuarios_desejados = [
+    "CAROLINE APARECIDA DA SILVA BARROZO", "DAVI GUERRA VAINE SILVA", "DAYSE MIRANDA DOS SANTOS",
+    "Diana Aparecida Barbosa Cesar", "DIANNE ALVES SILVA GONCALVES", "ISABELLY FERREIRA COSTA",
+    "JOAO VICTOR GONCALVES TAVARES DA SILVA", "JULIA GOMES SILVA", "LARYSSA MIGORANÇA KLEIN DA SILVA",
+    "MARIA DO ESPIRITO SANTO DA COSTA SILVA", "SARA ARAUJO SOUZA", "SARA GONCALVES FLORENTINO",
+    "WESLLEY MORAES DE AMORIM"
+]
+
+filtro_usuarios = df[df["Usuário Backoffice"].isin(usuarios_desejados)].copy()
+filtro_usuarios["Período"] = filtro_usuarios["Usuário Backoffice"].apply(
+    lambda x: "Manhã" if x in [
+        "CAROLINE APARECIDA DA SILVA BARROZO", "DAVI GUERRA VAINE SILVA", "DAYSE MIRANDA DOS SANTOS",
+        "Diana Aparecida Barbosa Cesar", "DIANNE ALVES SILVA GONCALVES", "ISABELLY FERREIRA COSTA",
+        "JULIA GOMES SILVA", "MARIA DO ESPIRITO SANTO DA COSTA SILVA", "SARA ARAUJO SOUZA"
+    ] else "Tarde")
+
+def classificar_q(c):
+    try:
+        p = float(c.replace('%', ''))
+        if p >= 100:
+            return "Q1"
+        elif p >= 95:
+            return "Q2"
+        elif p >= 90:
+            return "Q3"
+        else:
+            return "Q4"
+    except:
+        return "-"
+
+def gerar_resumo_com_media(df_base, titulo):
+    tabela = pd.pivot_table(
+        df_base, index=["Período", "Usuário Backoffice"], columns="Hora",
+        values="Nova Coluna", aggfunc="count", fill_value=0).reset_index()
+
+    tabela["Total"] = tabela.drop(columns=["Período", "Usuário Backoffice"]).sum(axis=1)
+
+    medias = tabela.groupby("Período")["Total"].mean().to_dict()
+    tabela["Conversão"] = tabela.apply(
+        lambda row: f"{round((row['Total'] / medias.get(row['Período'], 1)) * 100):.0f}%" if medias.get(
+            row['Período']) else "-",
+        axis=1)
+    tabela["Classificação"] = tabela["Conversão"].apply(classificar_q)
+
+    # Reorganizar colunas para deixar 'Conversão' e 'Classificação' após 'Total'
+    colunas = tabela.columns.tolist()
+    colunas.remove("Conversão")
+    colunas.remove("Classificação")
+    colunas += ["Conversão", "Classificação"]
+    tabela = tabela[colunas]
+
+    tabela.insert(0, "Dia", titulo)
+
+    # Criar linha de média
+    media_final = tabela.groupby("Período").mean(numeric_only=True).round(1).reset_index().drop_duplicates(
+        subset=["Período"])
+    media_final.insert(0, "Dia", f"Média - {titulo}")
+    media_final["Usuário Backoffice"] = "-"
+    media_final["Conversão"] = "-"
+    media_final["Classificação"] = "-"
+    media_final = media_final.groupby("Período").first().reset_index()
+
+    linha_vazia = pd.DataFrame([["" for _ in tabela.columns]], columns=tabela.columns)
+
+    return pd.concat([tabela, linha_vazia, media_final], ignore_index=True)
+
+
+resumo_ontem = gerar_resumo_com_media(
+    filtro_usuarios[filtro_usuarios["Data"] == dia_especifico], dia_especifico.strftime("%d/%m/%Y")
+)
+
+ws_resumo.range("A1").value = [resumo_ontem.columns.tolist()] + resumo_ontem.values.tolist()
+
+
+# FORMATAR RESUMO
+last_row = ws_resumo.range("A1").end("down").row
+last_col = ws_resumo.range("A1").end("right").column
+
+# Pintar cabeçalho de azul escuro e fonte branca
+for col in range(1, last_col + 1):
+    cell = ws_resumo.range((1, col))
+    cell.color = "#002060"  # Azul escuro
+    cell.font.color = "#FFFFFF"  # Branco
+last_row = ws_resumo.range("A1").end("down").row
+last_col = ws_resumo.range("A1").end("right").column
+# ws_resumo.api.Rows(2).Select()  # Removido para evitar erro com janela invisível
+ws_resumo.api.Application.ActiveWindow.SplitRow = 1
+ws_resumo.api.Application.ActiveWindow.SplitColumn = 0
+ws_resumo.api.Application.ActiveWindow.FreezePanes = True
+
+for col in range(1, last_col + 1):
+    if ws_resumo.range((1, col)).value == "Usuário Backoffice":
+        ws_resumo.range((1, col)).column_width = 30
+        break
+
+for row in range(2, last_row + 1):
+    valores_linha = [ws_resumo.range((row, col)).value for col in range(1, last_col + 1)]
+    if all(v in [None, ""] for v in valores_linha):
+        continue
+
+    periodo = str(ws_resumo.range((row, 2)).value).strip()
+    cor_fundo = "#CCE5FF" if periodo.lower() == "manhã" else "#FFF2CC"
+    cor_fonte = "#002060" if periodo.lower() == "manhã" else "#994C00"
+
+    for col in range(1, last_col + 1):
+        cell = ws_resumo.range((row, col))
+        header = ws_resumo.range((1, col)).value
+
+        if header == "Conversão":
+            valor = cell.value
+            if isinstance(valor, (int, float)):
+                valor = f"{valor:.0f}%"
+            else:
+                valor = str(valor)
+            try:
+                if valor.endswith("%"):
+                    pct = float(valor.replace("%", "%").replace(",", "."))
+                    if pct >= 100:
+                        cell.api.Interior.Color = 0x00FF00
+                    elif pct >= 95:
+                        cell.api.Interior.Color = 0xE2EFDA
+                    elif pct >= 91:
+                        cell.api.Interior.Color = 0xFFF2CC
+                    else:
+                        cell.api.Interior.Color = 0xF8CBAD
+            except:
+                pass
+
+        if header in ["Usuário Backoffice", "Total", "Classificação"]:
+            cell.api.Font.Bold = True
+
+        # Pintar Q1 de verde
+        if header == "Classificação":
+            classificacao = str(cell.value).strip().upper()
+            if classificacao == "Q1":
+                cell.api.Interior.Color = 0x00FF00
+        if header in ["Total", "Classificação"]:
+            cell.api.HorizontalAlignment = HAlign.xlHAlignCenter
+
+wb.app.api.ActiveWindow.DisplayGridlines = False
+
+
+wb.save()
+wb.close()
+app.quit()
+
+print("✅ Relatório gerado com sucesso!")
+
+import xlwings as xw
+
+# Abrir novamente o arquivo (como já foi fechado no final do script principal)
+app2 = xw.App(visible=False)
+wb2 = app2.books.open(r"F:\BACKOFFICE - CONTACT CENTER\Relatorios Extraidos Automacao\Dashboard.xlsx")
+ws2 = wb2.sheets["Performance BackOffice"]
+
+# Lista dos retângulos com as conversões
+retangulos = [
+    "Rounded Rectangle 7",
+    "Rounded Rectangle 10",
+    "Rounded Rectangle 11",
+    "Rounded Rectangle 12",
+    "Rounded Rectangle 13",
+    "Rounded Rectangle 14",
+    "Rounded Rectangle 15",
+    "Rounded Rectangle 16",
+    "Rounded Rectangle 17",
+    "Rounded Rectangle 18",
+    "Rounded Rectangle 19"
+]
+
+# Conversor de HEX para formato RGB Excel (BGR invertido)
+def hex_to_bgr(hex_color):
+    hex_color = hex_color.lstrip('#')
+    r = int(hex_color[0:2], 16)
+    g = int(hex_color[2:4], 16)
+    b = int(hex_color[4:6], 16)
+    return r + (g << 8) + (b << 16)
+
+# Cores definidas
+cor_fundo_baixa = hex_to_bgr("#FFBDBD")
+cor_fonte_baixa = hex_to_bgr("#FF0000")
+cor_fundo_alta = hex_to_bgr("#D9F2D0")
+cor_fonte_alta = hex_to_bgr("#275317")
+
+# Aplicar cor nas formas com base no texto interno (%)
+for nome in retangulos:
+    try:
+        shape = ws2.shapes[nome]
+        texto = shape.text
+        if texto.endswith("%"):
+            pct = float(texto.replace("%", "").replace(",", "."))
+            if pct < 91:
+                shape.api.Fill.ForeColor.RGB = cor_fundo_baixa
+                shape.api.TextFrame2.TextRange.Font.Fill.ForeColor.RGB = cor_fonte_baixa
+            else:
+                shape.api.Fill.ForeColor.RGB = cor_fundo_alta
+                shape.api.TextFrame2.TextRange.Font.Fill.ForeColor.RGB = cor_fonte_alta
+    except Exception as e:
+        print(f"Erro ao processar '{nome}': {e}")
+
+# Salvar e fechar
+wb2.save()
+wb2.close()
+app2.quit()
+print("🎨 Cores das formas atualizadas com sucesso!")
