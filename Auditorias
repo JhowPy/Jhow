@@ -1,0 +1,68 @@
+import win32com.client
+import re
+import os
+import pandas as pd
+from datetime import datetime
+
+# Caminho de saída direto na pasta de destino
+caminho_saida = r"F:\BACKOFFICE - CONTACT CENTER\Relatorio auditoria\2025\Abril\Auditoria Extraida.xlsx"
+
+# Acessar o Outlook
+outlook = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
+caixa_entrada = outlook.GetDefaultFolder(6)
+emails = caixa_entrada.Items
+emails.Sort("[ReceivedTime]", True)
+
+# Filtrar e-mails do dia
+data_hoje = datetime.today().date()
+emails_filtrados = []
+for email in emails:
+    try:
+        if email.ReceivedTime.date() == data_hoje:
+            emails_filtrados.append(email)
+    except Exception:
+        continue
+
+print(f"\n📬 E-mails encontrados hoje: {len(emails_filtrados)}")
+
+# Extrair os dados dos e-mails
+dados = []
+
+for email in emails_filtrados:
+    try:
+        if "finalização auditoria" in email.Subject.lower():
+            print(f"🔍 Processando: {email.Subject}")
+            corpo = email.Body
+
+            protocolo = re.search(r"protocolo nº (\d+)", corpo, re.IGNORECASE)
+            id_re = re.search(r"Id RE: (\d+)", corpo)
+            dt_solicitacao = re.search(r"Dt\. Solicitação: (.+)", corpo)
+            solicitante = re.search(r"Solicitante: (.+)", corpo)
+            aprovador = re.search(r"Aprovador: (.+)", corpo)
+            motivo = re.search(r"Motivo: (.+)", corpo)
+            dt_finalizacao = re.search(r"Dt\. Finalização: (.+)", corpo)
+            status = re.search(r"Status Finalização: (.+)", corpo)
+
+            dados.append({
+                "ID": id_re.group(1).strip() if id_re else "",
+                "Protocolo Auditoria": protocolo.group(1).strip() if protocolo else "",
+                "Dt. Solicitação": dt_solicitacao.group(1).strip() if dt_solicitacao else "",
+                "Solicitante": solicitante.group(1).strip() if solicitante else "",
+                "Aprovador": aprovador.group(1).strip() if aprovador else "",
+                "Motivo": motivo.group(1).strip() if motivo else "",
+                "Dt. Finalização": dt_finalizacao.group(1).strip() if dt_finalizacao else "",
+                "Status Auditoria": status.group(1).strip() if status else ""
+            })
+
+    except Exception as e:
+        print(f"❌ Erro ao processar e-mail: {e}")
+
+# Criar e salvar nova planilha
+if dados:
+    df = pd.DataFrame(dados)
+    df.to_excel(caminho_saida, index=False)
+    print(f"\n✅ Planilha criada com sucesso em: {caminho_saida}")
+else:
+    print("🚫 Nenhum dado de auditoria foi extraído dos e-mails de hoje.")
+
+
